@@ -1500,10 +1500,35 @@ MPEG transport stream muxer.
 
 This muxer implements ISO 13818-1 and part of ETSI EN 300 468.
 
-The recognized metadata settings in mpegts muxer are @code{service_provider}
-and @code{service_name}. If they are not set the default for
-@code{service_provider} is @samp{FFmpeg} and the default for
-@code{service_name} is @samp{Service01}.
+@subsection Metadata
+
+The recognized metadata settings in this muxer are:
+
+@table @option
+@item service_name @var{string}
+Set the @code{service_provider}.  Default is @samp{FFmpeg}.
+
+@item service_name @var{string}
+Set the @code{service_name}. Default is @samp{Service01}.
+
+@item atsc_name @var{string}
+Set the @code{atsc_name} for the stream.  This is the ATSC short
+channel name for the stream.
+
+@item atsc_channel @var{string}
+Set the @code{atsc_channel} virtual channel for the stream.  This
+is parsed as @samp{Channel[.SubChannel]} format where the subchannel
+is optional and defaults to @code{1}.
+
+@end table
+
+ATSC tables will @emph{not} be generated unless either @code{atsc_name}
+or @code{atsc_channel} are provided @emph{and} @code{muxrate} is provided.
+In the event that either @code{atsc_name} or @code{atsc_channel} is provided
+but not both, the default for @code{atsc_name} is @samp{FFmpeg}
+and the default for @code{atsc_channel} is @samp{1.1}.
+ATSC tables generated include @code{MGT} and @code{TVCT} tables but are lacking the mandatory
+@code{STT}, @code{EIT0}, @code{EIT1}, @code{EIT2} and @code{EIT3} tables needed for terrestrial ATC compliance.
 
 @subsection Options
 

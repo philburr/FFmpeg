@@ -35,12 +35,20 @@
 /* pids */
 #define PAT_PID                 0x0000
 #define SDT_PID                 0x0011
+#define ATSC_PID                0x1ffb
 
 /* table ids */
 #define PAT_TID   0x00
 #define PMT_TID   0x02
 #define M4OD_TID  0x05
 #define SDT_TID   0x42
+#define MGT_TID   0xc7
+#define TVCT_TID  0xc8
+#define CVCT_TID  0xc9
+#define RRT_TID   0xca
+#define EIT_TID   0xcb
+#define ETT_TID   0xcc
+#define STT_TID   0xcd
 
 #define STREAM_TYPE_VIDEO_MPEG1     0x01
 #define STREAM_TYPE_VIDEO_MPEG2     0x02
