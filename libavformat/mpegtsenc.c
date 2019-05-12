@@ -81,8 +81,23 @@ typedef struct MpegTSAtsc {
     int mgt_packet_period;
     int tvct_packet_count;
     int tvct_packet_period;
+    int stt_packet_total;
+    int stt_packet_count;
+    int stt_packet_period;
+    int eit0_packet_count;
+    int eit0_packet_period;
+    int eit1_packet_count;
+    int eit1_packet_period;
+    int eit23_packet_count;
+    int eit23_packet_period;
     int64_t last_mgt_ts;
     int64_t last_tvct_ts;
+    int64_t last_stt_ts;
+    int64_t last_eit0_ts;
+    int64_t last_eit1_ts;
+    int64_t last_eit23_ts;
+    uint32_t base_time;
+    double stt_period;
 
     uint32_t tvct_length;
     uint32_t mgt_length;
@@ -955,6 +970,41 @@ static void mpegts_write_tvct(AVFormatContext *s)
                           ts->atsc.tvct_data, ts->atsc.tvct_length);
 }
 
+static void mpegts_write_stt(AVFormatContext *s)
+{
+    MpegTSWrite *ts = s->priv_data;
+    uint8_t data[SECTION_LENGTH], *q;
+    uint32_t unix_time, gps_time;
+    const uint32_t gps_leap_seconds_as_of_1167264017 = 18;
+    uint32_t gps_leap_seconds_after_1167264017[] = {};
+    uint32_t gps_leap_seconds = gps_leap_seconds_as_of_1167264017;
+    int i;
+
+    q = data;
+
+    *q++ = 0; /* protocol_version == 0 */
+
+    if (ts->atsc.base_time == UINT32_MAX) {
+        ts->atsc.base_time = time(NULL);
+    }
+    unix_time = (uint64_t)floor(ts->atsc.base_time + ts->atsc.stt_period * ts->atsc.stt_packet_total++);
+    gps_time = unix_time - 315964800;
+    for (i = 0; i < sizeof(gps_leap_seconds_after_1167264017) / sizeof(gps_leap_seconds_after_1167264017[0]); i++) {
+        if (gps_time + gps_leap_seconds_as_of_1167264017 >= gps_leap_seconds_after_1167264017[i] - i) {
+            gps_leap_seconds++;
+        }
+    }
+    put32(&q, gps_time);
+    *q++ = gps_leap_seconds;
+
+    /* no support for coordinated DST transition */
+    *q++ = 0x60; *q++ = 0;
+
+    mpegts_write_section1(&ts->atsc.section, STT_TID, 0, ts->tables_version, 0, 0, 1,
+                          data, q - data);
+}
+
+
 /* This stores a string in buf with the correct encoding and also sets the
  * first byte as the length. !str is accepted for an empty string.
  * If the string is already encoded, invalid UTF-8 or has no multibyte sequence
@@ -1105,6 +1155,7 @@ static int mpegts_init(AVFormatContext *s)
 
     ts->tsid = ts->transport_stream_id;
     ts->onid = ts->original_network_id;
+    ts->atsc.base_time = UINT32_MAX;
     ts->atsc.enabled = 0;
     ts->atsc.regenerate = 1;
     if (!s->nb_programs) {
@@ -1327,6 +1378,15 @@ static int mpegts_init(AVFormatContext *s)
                                       (TS_PACKET_SIZE * 8 * 1000);
         ts->atsc.tvct_packet_period = (int64_t)ts->mux_rate * TVCT_RETRANS_TIME /
                                       (TS_PACKET_SIZE * 8 * 1000);
+        ts->atsc.stt_packet_period  = (int64_t)ts->mux_rate * STT_RETRANS_TIME /
+                                      (TS_PACKET_SIZE * 8 * 1000);
+        ts->atsc.eit0_packet_period = (int64_t)ts->mux_rate * EIT0_RETRANS_TIME /
+                                      (TS_PACKET_SIZE * 8 * 1000);
+        ts->atsc.eit1_packet_period = (int64_t)ts->mux_rate * EIT1_RETRANS_TIME /
+                                      (TS_PACKET_SIZE * 8 * 1000);
+        ts->atsc.eit23_packet_period= (int64_t)ts->mux_rate * EIT23_RETRANS_TIME /
+                                      (TS_PACKET_SIZE * 8 * 1000);
+        ts->atsc.stt_period         = (double)STT_RETRANS_TIME / 1000;
 
         if (ts->copyts < 1)
             ts->first_pcr = av_rescale(s->max_delay, PCR_TIME_BASE, AV_TIME_BASE);
@@ -1359,6 +1419,10 @@ static int mpegts_init(AVFormatContext *s)
     ts->last_sdt_ts = AV_NOPTS_VALUE;
     ts->atsc.last_mgt_ts = AV_NOPTS_VALUE;
     ts->atsc.last_tvct_ts = AV_NOPTS_VALUE;
+    ts->atsc.last_stt_ts = AV_NOPTS_VALUE;
+    ts->atsc.last_eit0_ts = AV_NOPTS_VALUE;
+    ts->atsc.last_eit1_ts = AV_NOPTS_VALUE;
+    ts->atsc.last_eit23_ts = AV_NOPTS_VALUE;
     // The user specified a period, use only it
     if (ts->pat_period < INT_MAX/2) {
         ts->pat_packet_period = INT_MAX;
@@ -1373,6 +1437,11 @@ static int mpegts_init(AVFormatContext *s)
     ts->sdt_packet_count       = ts->sdt_packet_period - 1;
     ts->atsc.mgt_packet_count  = ts->atsc.mgt_packet_period - 1;
     ts->atsc.tvct_packet_count = ts->atsc.tvct_packet_period - 1;
+    ts->atsc.stt_packet_count  = ts->atsc.stt_packet_period - 1;
+    ts->atsc.eit0_packet_count = ts->atsc.eit0_packet_period - 1;
+    ts->atsc.eit1_packet_count = ts->atsc.eit1_packet_period - 1;
+    ts->atsc.eit23_packet_count= ts->atsc.eit23_packet_period - 1;
+    ts->atsc.stt_packet_total  = 0;
 
     if (ts->mux_rate == 1)
         av_log(s, AV_LOG_VERBOSE, "muxrate VBR, ");
@@ -1443,6 +1512,35 @@ static void retransmit_si_info(AVFormatContext *s, int force_pat, int64_t dts)
         if (dts != AV_NOPTS_VALUE)
             ts->atsc.last_tvct_ts = FFMAX(dts, ts->atsc.last_tvct_ts);
         mpegts_write_tvct(s);
+    }
+    if (++ts->atsc.stt_packet_count == ts->atsc.stt_packet_period ||
+        (dts != AV_NOPTS_VALUE && ts->atsc.last_stt_ts == AV_NOPTS_VALUE)
+    ) {
+        ts->atsc.stt_packet_count = 0;
+        if (dts != AV_NOPTS_VALUE)
+            ts->atsc.last_stt_ts = FFMAX(dts, ts->atsc.last_stt_ts);
+        mpegts_write_stt(s);
+    }
+    if (++ts->atsc.eit0_packet_count == ts->atsc.eit0_packet_period ||
+        (dts != AV_NOPTS_VALUE && ts->atsc.last_eit0_ts == AV_NOPTS_VALUE)
+    ) {
+        ts->atsc.eit0_packet_count = 0;
+        if (dts != AV_NOPTS_VALUE)
+            ts->atsc.last_eit0_ts = FFMAX(dts, ts->atsc.last_eit0_ts);
+    }
+    if (++ts->atsc.eit1_packet_count == ts->atsc.eit1_packet_period ||
+        (dts != AV_NOPTS_VALUE && ts->atsc.last_eit1_ts == AV_NOPTS_VALUE)
+    ) {
+        ts->atsc.eit1_packet_count = 0;
+        if (dts != AV_NOPTS_VALUE)
+            ts->atsc.last_eit1_ts = FFMAX(dts, ts->atsc.last_eit1_ts);
+    }
+    if (++ts->atsc.eit23_packet_count == ts->atsc.eit23_packet_period ||
+        (dts != AV_NOPTS_VALUE && ts->atsc.last_eit23_ts == AV_NOPTS_VALUE)
+    ) {
+        ts->atsc.eit23_packet_count = 0;
+        if (dts != AV_NOPTS_VALUE)
+            ts->atsc.last_eit23_ts = FFMAX(dts, ts->atsc.last_eit23_ts);
     }
 }
 
