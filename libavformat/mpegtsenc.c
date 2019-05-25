@@ -286,6 +286,13 @@ typedef struct MpegTSWriteStream {
     /* For Opus */
     int opus_queued_samples;
     int opus_pending_trim_start;
+
+    /* For [E]AC3 */
+    unsigned ac3_parsed;
+    unsigned ac3_bsid;
+    unsigned ac3_bsmod;
+    unsigned ac3_acmod;
+    unsigned ac3_dsurmod;
 } MpegTSWriteStream;
 
 static void mpegts_write_pat(AVFormatContext *s)
@@ -446,15 +453,104 @@ static int mpegts_write_pmt(AVFormatContext *s, MpegTSService *service)
         /* write optional descriptors here */
         switch (st->codecpar->codec_type) {
         case AVMEDIA_TYPE_AUDIO:
-            if (st->codecpar->codec_id==AV_CODEC_ID_AC3 && (ts->flags & MPEGTS_FLAG_SYSTEM_B)) {
-                *q++=0x6a; // AC3 descriptor see A038 DVB SI
-                *q++=1; // 1 byte, all flags sets to 0
-                *q++=0; // omit all fields...
+            if (st->codecpar->codec_id==AV_CODEC_ID_AC3) {
+                if (ts->flags & MPEGTS_FLAG_SYSTEM_B) {
+                    *q++=0x6a; // AC3 descriptor see A038 DVB SI
+                    *q++=1; // 1 byte, all flags sets to 0
+                    *q++=0; // omit all fields...
+                } else if (ts_st->ac3_parsed) {
+                    unsigned bsid = ts_st->ac3_bsid;
+                    unsigned bsmod = ts_st->ac3_bsmod;
+                    unsigned acmod = ts_st->ac3_acmod;
+                    unsigned dsurmod = ts_st->ac3_dsurmod;
+
+                    static unsigned bit_rates[] = { 32000, 40000, 48000, 56000, 64000, 80000, 96000, 112000, 128000, 160000, 192000, 224000, 256000, 320000, 384000, 448000, 512000, 576000, 640000, };
+                    unsigned sample_rate_code;
+                    unsigned bit_rate_code;
+                    unsigned low;
+                    unsigned high;
+                    unsigned main_id = 0;
+                    unsigned priority = 1;
+
+                    *q++=0x81;
+                    *q++=7 + (lang?3:0); // dual mono is not supported (num_channels != 0)
+
+                    switch (st->codecpar->sample_rate) {
+                        case 48000: sample_rate_code = 0; break;
+                        case 44100: sample_rate_code = 1; break;
+                        case 32000: sample_rate_code = 2; break;
+                        default:
+                            av_log(s, AV_LOG_WARNING, "AC3 sample rate unsupported\n");
+                            sample_rate_code = 7;
+                            break;
+                    }
+                    // binary search, this binary search finds the lowest index >= the target
+                    low = 0;
+                    high = sizeof(bit_rates)/sizeof(bit_rates[0]);
+                    while (low < high) {
+                        unsigned mid = (low + high)/2;
+                        if (bit_rates[mid] < st->codecpar->bit_rate) {
+                            low = mid + 1;
+                        } else {
+                            high = mid;
+                        }
+                    }
+                    if (high == sizeof(bit_rates)/sizeof(bit_rates[0])) {
+                        av_log(s, AV_LOG_WARNING, "AC3 bit rate unsupported\n");
+                        bit_rate_code = 50;
+                    } else if (bit_rates[high] == st->codecpar->bit_rate) {
+                        bit_rate_code = high;
+                    } else {
+                        bit_rate_code = 32 + high;
+                    }
+                    main_id = 0;
+                    priority = 1;
+
+                    *q++=((sample_rate_code & 0x7) << 5) | (bsid & 0x1f);
+                    *q++=((bit_rate_code & 0x3f) << 2) | (dsurmod & 0x3);
+                    *q++=((bsmod & 0x7) << 5) | ((acmod & 0xf) << 1) | 1;
+                    *q++=0xff;; // langcod
+                    if (bsmod < 2) {
+                        *q++=((main_id & 0x7) << 5) | ((priority & 0x3) << 3) | 0x7;
+                    } else {
+                        av_log(s, AV_LOG_WARNING, "AC3 aux audio unsupported\n");
+                        *q++=0;
+                    }
+                    *q++=1; // texlen (len=0, iso 8859-1)
+                    if (lang) {
+                        *q++=0xbf;
+                        *q++=lang->value[0];
+                        *q++=lang->value[1];
+                        *q++=lang->value[2];
+                    } else {
+                        *q++=0x3f;
+                    }
+                }
             }
-            if (st->codecpar->codec_id==AV_CODEC_ID_EAC3 && (ts->flags & MPEGTS_FLAG_SYSTEM_B)) {
-                *q++=0x7a; // EAC3 descriptor see A038 DVB SI
-                *q++=1; // 1 byte, all flags sets to 0
-                *q++=0; // omit all fields...
+            if (st->codecpar->codec_id==AV_CODEC_ID_EAC3) {
+                if (ts->flags & MPEGTS_FLAG_SYSTEM_B) {
+                    *q++=0x7a; // EAC3 descriptor see A038 DVB SI
+                    *q++=1; // 1 byte, all flags sets to 0
+                    *q++=0; // omit all fields...
+                } else {
+                    unsigned number_of_channels = 0;
+                    const unsigned channels_3_2 = (AV_CH_FRONT_LEFT|AV_CH_FRONT_RIGHT|AV_CH_FRONT_CENTER|AV_CH_BACK_LEFT|AV_CH_BACK_RIGHT);
+                    if (st->codecpar->channel_layout == AV_CH_LAYOUT_MONO) {
+                        number_of_channels = 0;
+                    } else if (st->codecpar->channel_layout == AV_CH_LAYOUT_STEREO) {
+                        number_of_channels = 2;
+                    } else if ((st->codecpar->channel_layout & ~channels_3_2) == 0) {
+                        number_of_channels = 4;
+                    } else {
+                        number_of_channels = 5;
+                    }
+
+                    *q++=0xcc;
+                    *q++=3;
+                    *q++=0x80|((ts_st->ac3_parsed&1)<<6);
+                    *q++=0xc0|number_of_channels;
+                    *q++=0x20|(ts_st->ac3_parsed?ts_st->ac3_bsid:0);
+                }
             }
             if (st->codecpar->codec_id==AV_CODEC_ID_S302M)
                 put_registration_descriptor(&q, MKTAG('B', 'S', 'S', 'D'));
@@ -1474,6 +1570,19 @@ static void mpegts_write_pes(AVFormatContext *s, AVStream *st,
     int64_t pcr = -1; /* avoid warning */
     int64_t delay = av_rescale(s->max_delay, 90000, AV_TIME_BASE);
     int force_pat = st->codecpar->codec_type == AVMEDIA_TYPE_VIDEO && key && !ts_st->prev_payload_key;
+
+    if (st->codecpar->codec_type == AVMEDIA_TYPE_AUDIO && (st->codecpar->codec_id == AV_CODEC_ID_AC3 || st->codecpar->codec_id == AV_CODEC_ID_EAC3)) {
+        /* extract ac3 parameters for descriptor */
+        /* should see sync word here */
+        if (((payload[0] << 8) | payload[1]) == 0xb77) {
+            ts_st->ac3_bsid = payload[5] >> 3;
+            ts_st->ac3_bsmod = payload[5] & 0x7;
+            ts_st->ac3_acmod = payload[6] >> 5;
+            ts_st->ac3_dsurmod = (ts_st->ac3_acmod == 2) ? ((payload[6] >> 3) & 3) : 0;
+            force_pat = ts_st->ac3_parsed == 0;
+            ts_st->ac3_parsed = 1;
+        }
+    }
 
     av_assert0(ts_st->payload != buf || st->codecpar->codec_type != AVMEDIA_TYPE_VIDEO);
     if (ts->flags & MPEGTS_FLAG_PAT_PMT_AT_FRAMES && st->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
