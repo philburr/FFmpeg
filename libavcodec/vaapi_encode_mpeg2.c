@@ -31,6 +31,7 @@ typedef struct VAAPIEncodeMPEG2Context {
     VAAPIEncodeContext common;
 
     // User options.
+    int qp;
     int profile;
     int level;
 
@@ -624,6 +625,9 @@ static av_cold int vaapi_encode_mpeg2_init(AVCodecContext *avctx)
     ctx->surface_width  = FFALIGN(avctx->width,  16);
     ctx->surface_height = FFALIGN(avctx->height, 16);
 
+    if (priv->qp > 0)
+        ctx->explicit_qp = priv->qp;
+
     return ff_vaapi_encode_init(avctx);
 }
 
@@ -643,6 +647,8 @@ static const AVOption vaapi_encode_mpeg2_options[] = {
     VAAPI_ENCODE_COMMON_OPTIONS,
     VAAPI_ENCODE_RC_OPTIONS,
 
+    { "qp", "Constant QP (for P-frames; scaled by qfactor/qoffset for I/B)",
+      OFFSET(qp), AV_OPT_TYPE_INT, { .i64 = 0 }, 0, 52, FLAGS },
     { "profile", "Set profile (in profile_and_level_indication)",
       OFFSET(profile), AV_OPT_TYPE_INT,
       { .i64 = FF_PROFILE_UNKNOWN }, FF_PROFILE_UNKNOWN, 7, FLAGS, "profile" },
