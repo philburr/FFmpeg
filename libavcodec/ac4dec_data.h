@@ -455,6 +455,14 @@ static const uint8_t n_grp_bits_c[4] = {
     3, 1, 0, 0,
 };
 
+static const uint8_t channel_mode_bits_v1[] = {
+    1, 2, 4, 4, 4, 7, 7, 7, 7, 7, 7,
+};
+
+static const uint16_t channel_mode_codes_v1[] = {
+    0, 2, 12, 13, 14, 120, 121, 122, 123, 124, 125,
+};
+
 static const uint8_t channel_mode_bits[] = {
     1, 2, 4, 4, 4, 7, 7, 7, 7, 7, 7, 8, 8, 9, 9, 9, 9,
 };

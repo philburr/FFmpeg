@@ -46,3 +46,7 @@
 /libavfilter/vulkan/*.c
 /.*/
 !/.forgejo/
+
+/test_vectors/
+/*.pdf
+/*.ts
