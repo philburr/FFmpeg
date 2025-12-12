@@ -4652,6 +4652,10 @@ static int m5channel_processing(AC4DecodeContext *s, Substream *ss)
             break;
         }
         break;
+    case CM_ASPX_ACPL_3:
+        if (ss->mdct_stereo_proc[0])
+             two_channel_processing(s, ss, &ss->ssch[0], &ss->ssch[1]);
+        break;
     }
 
     return 0;
