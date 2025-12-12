@@ -39,7 +39,13 @@
 #include "decode.h"
 #include "get_bits.h"
 #include "kbdwin.h"
+#include "libavutil/mem.h"
 #include "unary.h"
+
+#define VLC_INIT_STATIC(vlc, bits, a,b,c,d,e,f,g, static_size) do { \
+    if (!(vlc)->table) \
+        vlc_init(vlc, bits, a,b,c,d,e,f,g, 0); \
+} while(0)
 
 /* Number of model bits */
 #define SSF_MODEL_BITS 15
@@ -731,7 +737,7 @@ static av_cold int ac4_decode_init(AVCodecContext *avctx)
             if ((ret = av_tx_init(&s->tx_ctx[j][i], &s->tx_fn[j][i], AV_TX_FLOAT_MDCT, 1, N_w, &scale, 0)))
                 return ret;
 
-            avpriv_kbd_window_init(s->kbd_window[j][i], alpha, N_w);
+            ff_kbd_window_init(s->kbd_window[j][i], alpha, N_w);
         }
     }
 
@@ -5764,7 +5770,7 @@ static int ac4_decode_frame(AVCodecContext *avctx, AVFrame *frame,
     presentation = FFMIN(s->target_presentation, FFMAX(0, s->nb_presentations - 1));
     ssinfo = s->version == 2 ? &s->ssgroup[0].ssinfo : &s->pinfo[presentation].ssinfo;
     avctx->sample_rate = s->fs_index ? 48000 : 44100;
-    avctx->channels = channel_mode_nb_channels[ssinfo->channel_mode];
+    avctx->ch_layout.nb_channels = channel_mode_nb_channels[ssinfo->channel_mode];
     avctx->ch_layout = ff_ac4_ch_layouts[ssinfo->channel_mode];
     //frame->nb_samples = av_rescale(s->frame_len_base,
     //                               s->resampling_ratio.num,
@@ -5798,7 +5804,7 @@ static int ac4_decode_frame(AVCodecContext *avctx, AVFrame *frame,
     if (get_bits_left(gb) < 0)
         av_log(s->avctx, AV_LOG_WARNING, "overread\n");
 
-    for (int ch = 0; ch < avctx->channels; ch++)
+    for (int ch = 0; ch < avctx->ch_layout.nb_channels; ch++)
         scale_spec(s, ch);
 
     switch (ssinfo->channel_mode) {
@@ -5814,7 +5820,7 @@ static int ac4_decode_frame(AVCodecContext *avctx, AVFrame *frame,
         break;
     }
 
-    for (int ch = 0; ch < avctx->channels; ch++)
+    for (int ch = 0; ch < avctx->ch_layout.nb_channels; ch++)
         prepare_channel(s, ch);
 
     switch (ssinfo->channel_mode) {
@@ -5829,10 +5835,13 @@ static int ac4_decode_frame(AVCodecContext *avctx, AVFrame *frame,
         break;
     }
 
-    for (int ch = 0; ch < avctx->channels; ch++)
+    for (int ch = 0; ch < avctx->ch_layout.nb_channels; ch++)
         decode_channel(s, ch, (float *)frame->extended_data[ch]);
 
-    frame->key_frame = s->iframe_global;
+    if (s->iframe_global)
+        frame->flags |= AV_FRAME_FLAG_KEY;
+    else
+        frame->flags &= ~AV_FRAME_FLAG_KEY;
 
     *got_frame_ptr = 1;
 
