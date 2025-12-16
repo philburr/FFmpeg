@@ -314,6 +314,7 @@ typedef struct Substream {
     uint8_t coding_config;
     float   matrix_stereo[16][128][2][2];
     float   alpha_q[16][128];
+    float   alpha_q_2nd[16][128];
 
     int     spec_frontend_l;
     int     spec_frontend_r;
@@ -4949,9 +4950,10 @@ static int two_channel_processing(AC4DecodeContext *s, Substream *ss,
                                   SubstreamChannel *ssch1)
 {
     int max_sfb_prev;
-    float sap_gain;
+    float sap_gain0, sap_gain1;
 
     memset(&ss->alpha_q, 0, sizeof(ss->alpha_q));
+    memset(&ss->alpha_q_2nd, 0, sizeof(ss->alpha_q_2nd));
 
     max_sfb_prev = get_max_sfb(s, ssch0, 0);
     for (int g = 0; g < ssch0->scp.num_window_groups; g++) {
@@ -4992,18 +4994,42 @@ static int two_channel_processing(AC4DecodeContext *s, Substream *ss,
                             ss->alpha_q[g][sfb] = ss->alpha_q[g][sfb-2] + delta;
                         }
                     }
-                    // inverse quantize alpha_q[g][sfb]
-                    sap_gain = ss->alpha_q[g][sfb] * 0.1f;
-                    m[0][0] =  1 + sap_gain;
-                    m[0][1] =  1;
-                    m[1][0] =  1 - sap_gain;
-                    m[1][1] = -1;
+                    sap_gain0 = ss->alpha_q[g][sfb] * 0.1f;
                 } else {
-                    m[0][0] = 1;
-                    m[0][1] = 0;
-                    m[1][0] = 0;
-                    m[1][1] = 1;
+                    sap_gain0 = 0.f;
                 }
+
+                if (ssch1->sap_mode == 3 && ssch1->sap_coeff_used[g][sfb]) {
+                    if (sfb & 1) {
+                         ss->alpha_q_2nd[g][sfb] = ss->alpha_q_2nd[g][sfb-1];
+                    } else {
+                        float delta = ssch1->dpcm_alpha_q[g][sfb] - 60;
+                        int code_delta;
+
+                        if ((g == 0) || (max_sfb_g != max_sfb_prev)) {
+                             code_delta = 0;
+                        } else {
+                             code_delta = ssch1->delta_code_time;
+                        }
+
+                        if (code_delta) {
+                            ss->alpha_q_2nd[g][sfb] = ss->alpha_q_2nd[g-1][sfb] + delta;
+                        } else if (sfb == 0) {
+                            ss->alpha_q_2nd[g][sfb] = delta;
+                        } else {
+                            ss->alpha_q_2nd[g][sfb] = ss->alpha_q_2nd[g][sfb-2] + delta;
+                        }
+                    }
+                    sap_gain1 = ss->alpha_q_2nd[g][sfb] * 0.1f;
+                } else {
+                    sap_gain1 = sap_gain0;
+                }
+
+                 // inverse quantize alpha_q[g][sfb]
+                m[0][0] =  1 + sap_gain0;
+                m[0][1] =  1 - sap_gain1;
+                m[1][0] =  1 - sap_gain0;
+                m[1][1] = -1;
             }
 
             memcpy(&ss->matrix_stereo[g][sfb], m, sizeof(m));
