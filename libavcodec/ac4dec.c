@@ -278,6 +278,12 @@ typedef struct SubstreamChannel {
 typedef struct Substream {
     int     codec_mode;
 
+    int     core_5ch_grouping;
+    int     immersive_codec_mode;
+    int     core_channel_config;
+    int     b_5fronts;
+    int     b_lfe;
+
     int     aspx_quant_mode_env;
     int     aspx_start_freq;
     int     prev_aspx_start_freq;
@@ -4429,6 +4435,11 @@ static int immersive_channel_element(AC4DecodeContext *s, int b_lfe, int b_5fron
 
     core_channel_config = get_core_channel_config(immersive_codec_mode);
 
+    ss->immersive_codec_mode = immersive_codec_mode;
+    ss->core_channel_config = core_channel_config;
+    ss->b_5fronts = b_5fronts;
+    ss->b_lfe = b_lfe;
+
     if (b_iframe) {
         immersive_cfg(s, immersive_codec_mode);
     }
@@ -4440,6 +4451,7 @@ static int immersive_channel_element(AC4DecodeContext *s, int b_lfe, int b_5fron
     }
 
     int core_5ch_grouping = get_bits(&s->gbc, 2);
+    ss->core_5ch_grouping = core_5ch_grouping;
     switch (core_5ch_grouping) {
     case 0:
         ss->mode_2ch = get_bits1(&s->gbc);
@@ -6121,6 +6133,370 @@ static int stereo_aspx_processing(AC4DecodeContext *s, Substream *ss)
     return 0;
 }
 
+
+static int immersive_processing(AC4DecodeContext *s, Substream *ss)
+{
+    int ch_index = 5;
+
+    switch (ss->core_5ch_grouping) {
+    case 0:
+        if (ss->ssch[0].mdct_stereo_proc)
+            two_channel_processing(s, ss, &ss->ssch[0], &ss->ssch[1]);
+        if (ss->ssch[3].mdct_stereo_proc)
+            two_channel_processing(s, ss, &ss->ssch[3], &ss->ssch[4]);
+        break;
+    case 1:
+        if (ss->ssch[3].mdct_stereo_proc)
+            two_channel_processing(s, ss, &ss->ssch[3], &ss->ssch[4]);
+        break;
+    }
+
+    if (ss->core_channel_config == CORE_7CH_STATIC) {
+        if (ss->ssch[5].mdct_stereo_proc)
+            two_channel_processing(s, ss, &ss->ssch[5], &ss->ssch[6]);
+        ch_index = 7;
+    }
+
+    if (ss->immersive_codec_mode == SCPL ||
+        ss->immersive_codec_mode == ASPX_SCPL ||
+        ss->immersive_codec_mode == ASPX_ACPL_1)
+    {
+        if (ss->ssch[ch_index].mdct_stereo_proc)
+            two_channel_processing(s, ss, &ss->ssch[ch_index], &ss->ssch[ch_index + 1]);
+        if (ss->ssch[ch_index + 2].mdct_stereo_proc)
+            two_channel_processing(s, ss, &ss->ssch[ch_index + 2], &ss->ssch[ch_index + 3]);
+
+        if (ss->b_5fronts) {
+            if (ss->ssch[ch_index + 4].mdct_stereo_proc)
+                two_channel_processing(s, ss, &ss->ssch[ch_index + 4], &ss->ssch[ch_index + 5]);
+        }
+    }
+
+    return 0;
+}
+
+static int immersive_aspx_processing(AC4DecodeContext *s, Substream *ss)
+{
+    if (ss->immersive_codec_mode == ASPX_SCPL) {
+        aspx_processing(s, &ss->ssch[0]);
+        aspx_processing(s, &ss->ssch[1]);
+        get_qsignal_scale_factors(s, &ss->ssch[0], 0);
+        get_qsignal_scale_factors(s, &ss->ssch[1], 1);
+        get_qnoise_scale_factors(s, &ss->ssch[0], 0);
+        get_qnoise_scale_factors(s, &ss->ssch[1], 1);
+        if (ss->ssch[0].aspx_balance == 0) {
+            mono_deq_signal_factors(s, &ss->ssch[0]);
+            mono_deq_signal_factors(s, &ss->ssch[1]);
+            mono_deq_noise_factors(s, &ss->ssch[0]);
+            mono_deq_noise_factors(s, &ss->ssch[1]);
+        } else {
+            stereo_deq_signoise_factors(s, &ss->ssch[0], &ss->ssch[1]);
+        }
+        preflattening(s, &ss->ssch[0]);
+        preflattening(s, &ss->ssch[1]);
+        get_covariance(s, &ss->ssch[0]);
+        get_covariance(s, &ss->ssch[1]);
+        get_alphas(s, &ss->ssch[0]);
+        get_alphas(s, &ss->ssch[1]);
+        get_chirps(s, &ss->ssch[0]);
+        get_chirps(s, &ss->ssch[1]);
+        create_high_signal(s, ss, &ss->ssch[0]);
+        create_high_signal(s, ss, &ss->ssch[1]);
+        estimate_spectral_envelopes(s, ss, &ss->ssch[0]);
+        estimate_spectral_envelopes(s, ss, &ss->ssch[1]);
+        map_signoise(s, &ss->ssch[0]);
+        map_signoise(s, &ss->ssch[1]);
+        add_sinusoids(s, &ss->ssch[0]);
+        add_sinusoids(s, &ss->ssch[1]);
+        generate_tones(s, &ss->ssch[0]);
+        generate_tones(s, &ss->ssch[1]);
+        generate_noise(s, &ss->ssch[0]);
+        generate_noise(s, &ss->ssch[1]);
+        assemble_hf_signal(s, &ss->ssch[0]);
+        assemble_hf_signal(s, &ss->ssch[1]);
+
+        aspx_processing(s, &ss->ssch[2]);
+        aspx_processing(s, &ss->ssch[3]);
+        get_qsignal_scale_factors(s, &ss->ssch[2], 0);
+        get_qsignal_scale_factors(s, &ss->ssch[3], 1);
+        get_qnoise_scale_factors(s, &ss->ssch[2], 0);
+        get_qnoise_scale_factors(s, &ss->ssch[3], 1);
+        if (ss->ssch[2].aspx_balance == 0) {
+            mono_deq_signal_factors(s, &ss->ssch[2]);
+            mono_deq_signal_factors(s, &ss->ssch[3]);
+            mono_deq_noise_factors(s, &ss->ssch[2]);
+            mono_deq_noise_factors(s, &ss->ssch[3]);
+        } else {
+            stereo_deq_signoise_factors(s, &ss->ssch[2], &ss->ssch[3]);
+        }
+        preflattening(s, &ss->ssch[2]);
+        preflattening(s, &ss->ssch[3]);
+        get_covariance(s, &ss->ssch[2]);
+        get_covariance(s, &ss->ssch[3]);
+        get_alphas(s, &ss->ssch[2]);
+        get_alphas(s, &ss->ssch[3]);
+        get_chirps(s, &ss->ssch[2]);
+        get_chirps(s, &ss->ssch[3]);
+        create_high_signal(s, ss, &ss->ssch[2]);
+        create_high_signal(s, ss, &ss->ssch[3]);
+        estimate_spectral_envelopes(s, ss, &ss->ssch[2]);
+        estimate_spectral_envelopes(s, ss, &ss->ssch[3]);
+        map_signoise(s, &ss->ssch[2]);
+        map_signoise(s, &ss->ssch[3]);
+        add_sinusoids(s, &ss->ssch[2]);
+        add_sinusoids(s, &ss->ssch[3]);
+        generate_tones(s, &ss->ssch[2]);
+        generate_tones(s, &ss->ssch[3]);
+        generate_noise(s, &ss->ssch[2]);
+        generate_noise(s, &ss->ssch[3]);
+        assemble_hf_signal(s, &ss->ssch[2]);
+        assemble_hf_signal(s, &ss->ssch[3]);
+
+        // Processing ssch[4]
+        {
+            SubstreamChannel *ssch = &ss->ssch[4];
+            aspx_processing(s, ssch);
+            get_qsignal_scale_factors(s, ssch, 0);
+            get_qnoise_scale_factors(s, ssch, 0);
+            mono_deq_signal_factors(s, ssch);
+            mono_deq_noise_factors(s, ssch);
+            preflattening(s, ssch);
+            get_covariance(s, ssch);
+            get_alphas(s, ssch);
+            get_chirps(s, ssch);
+            create_high_signal(s, ss, ssch);
+            estimate_spectral_envelopes(s, ss, ssch);
+            map_signoise(s, ssch);
+            add_sinusoids(s, ssch);
+            generate_tones(s, ssch);
+            generate_noise(s, ssch);
+            assemble_hf_signal(s, ssch);
+        }
+
+        if (ss->b_5fronts) {
+            int start_pairs[] = {5, 7, 9, 11};
+            for (int k=0; k<4; k++) {
+                int ch = start_pairs[k];
+                SubstreamChannel *ssch0 = &ss->ssch[ch];
+                SubstreamChannel *ssch1 = &ss->ssch[ch+1];
+                
+                aspx_processing(s, ssch0);
+                aspx_processing(s, ssch1);
+                get_qsignal_scale_factors(s, ssch0, 0);
+                get_qsignal_scale_factors(s, ssch1, 1);
+                get_qnoise_scale_factors(s, ssch0, 0);
+                get_qnoise_scale_factors(s, ssch1, 1);
+                if (ssch0->aspx_balance == 0) {
+                    mono_deq_signal_factors(s, ssch0);
+                    mono_deq_signal_factors(s, ssch1);
+                    mono_deq_noise_factors(s, ssch0);
+                    mono_deq_noise_factors(s, ssch1);
+                } else {
+                    stereo_deq_signoise_factors(s, ssch0, ssch1);
+                }
+                preflattening(s, ssch0);
+                preflattening(s, ssch1);
+                get_covariance(s, ssch0);
+                get_covariance(s, ssch1);
+                get_alphas(s, ssch0);
+                get_alphas(s, ssch1);
+                get_chirps(s, ssch0);
+                get_chirps(s, ssch1);
+                create_high_signal(s, ss, ssch0);
+                create_high_signal(s, ss, ssch1);
+                estimate_spectral_envelopes(s, ss, ssch0);
+                estimate_spectral_envelopes(s, ss, ssch1);
+                map_signoise(s, ssch0);
+                map_signoise(s, ssch1);
+                add_sinusoids(s, ssch0);
+                add_sinusoids(s, ssch1);
+                generate_tones(s, ssch0);
+                generate_tones(s, ssch1);
+                generate_noise(s, ssch0);
+                generate_noise(s, ssch1);
+                assemble_hf_signal(s, ssch0);
+                assemble_hf_signal(s, ssch1);
+            }
+        } else {
+            int start_pairs[] = {5, 7, 9};
+            for (int k=0; k<3; k++) {
+                int ch = start_pairs[k];
+                SubstreamChannel *ssch0 = &ss->ssch[ch];
+                SubstreamChannel *ssch1 = &ss->ssch[ch+1];
+                
+                aspx_processing(s, ssch0);
+                aspx_processing(s, ssch1);
+                get_qsignal_scale_factors(s, ssch0, 0);
+                get_qsignal_scale_factors(s, ssch1, 1);
+                get_qnoise_scale_factors(s, ssch0, 0);
+                get_qnoise_scale_factors(s, ssch1, 1);
+                if (ssch0->aspx_balance == 0) {
+                    mono_deq_signal_factors(s, ssch0);
+                    mono_deq_signal_factors(s, ssch1);
+                    mono_deq_noise_factors(s, ssch0);
+                    mono_deq_noise_factors(s, ssch1);
+                } else {
+                    stereo_deq_signoise_factors(s, ssch0, ssch1);
+                }
+                preflattening(s, ssch0);
+                preflattening(s, ssch1);
+                get_covariance(s, ssch0);
+                get_covariance(s, ssch1);
+                get_alphas(s, ssch0);
+                get_alphas(s, ssch1);
+                get_chirps(s, ssch0);
+                get_chirps(s, ssch1);
+                create_high_signal(s, ss, ssch0);
+                create_high_signal(s, ss, ssch1);
+                estimate_spectral_envelopes(s, ss, ssch0);
+                estimate_spectral_envelopes(s, ss, ssch1);
+                map_signoise(s, ssch0);
+                map_signoise(s, ssch1);
+                add_sinusoids(s, ssch0);
+                add_sinusoids(s, ssch1);
+                generate_tones(s, ssch0);
+                generate_tones(s, ssch1);
+                generate_noise(s, ssch0);
+                generate_noise(s, ssch1);
+                assemble_hf_signal(s, ssch0);
+                assemble_hf_signal(s, ssch1);
+            }
+        }
+    } else if (ss->immersive_codec_mode == ASPX_ACPL_1 ||
+               ss->immersive_codec_mode == ASPX_ACPL_2 ||
+               ss->immersive_codec_mode == ASPX_AJCC)
+    {
+        int start_pairs[] = {0, 2};
+        for (int k=0; k<2; k++) {
+                int ch = start_pairs[k];
+                SubstreamChannel *ssch0 = &ss->ssch[ch];
+                SubstreamChannel *ssch1 = &ss->ssch[ch+1];
+                
+                aspx_processing(s, ssch0);
+                aspx_processing(s, ssch1);
+                get_qsignal_scale_factors(s, ssch0, 0);
+                get_qsignal_scale_factors(s, ssch1, 1);
+                get_qnoise_scale_factors(s, ssch0, 0);
+                get_qnoise_scale_factors(s, ssch1, 1);
+                if (ssch0->aspx_balance == 0) {
+                    mono_deq_signal_factors(s, ssch0);
+                    mono_deq_signal_factors(s, ssch1);
+                    mono_deq_noise_factors(s, ssch0);
+                    mono_deq_noise_factors(s, ssch1);
+                } else {
+                    stereo_deq_signoise_factors(s, ssch0, ssch1);
+                }
+                preflattening(s, ssch0);
+                preflattening(s, ssch1);
+                get_covariance(s, ssch0);
+                get_covariance(s, ssch1);
+                get_alphas(s, ssch0);
+                get_alphas(s, ssch1);
+                get_chirps(s, ssch0);
+                get_chirps(s, ssch1);
+                create_high_signal(s, ss, ssch0);
+                create_high_signal(s, ss, ssch1);
+                estimate_spectral_envelopes(s, ss, ssch0);
+                estimate_spectral_envelopes(s, ss, ssch1);
+                map_signoise(s, ssch0);
+                map_signoise(s, ssch1);
+                add_sinusoids(s, ssch0);
+                add_sinusoids(s, ssch1);
+                generate_tones(s, ssch0);
+                generate_tones(s, ssch1);
+                generate_noise(s, ssch0);
+                generate_noise(s, ssch1);
+                assemble_hf_signal(s, ssch0);
+                assemble_hf_signal(s, ssch1);
+        }
+
+        if (ss->core_channel_config == CORE_7CH_STATIC) {
+            {
+                SubstreamChannel *ssch0 = &ss->ssch[4];
+                SubstreamChannel *ssch1 = &ss->ssch[5];
+                
+                aspx_processing(s, ssch0);
+                aspx_processing(s, ssch1);
+                get_qsignal_scale_factors(s, ssch0, 0);
+                get_qsignal_scale_factors(s, ssch1, 1);
+                get_qnoise_scale_factors(s, ssch0, 0);
+                get_qnoise_scale_factors(s, ssch1, 1);
+                if (ssch0->aspx_balance == 0) {
+                    mono_deq_signal_factors(s, ssch0);
+                    mono_deq_signal_factors(s, ssch1);
+                    mono_deq_noise_factors(s, ssch0);
+                    mono_deq_noise_factors(s, ssch1);
+                } else {
+                    stereo_deq_signoise_factors(s, ssch0, ssch1);
+                }
+                preflattening(s, ssch0);
+                preflattening(s, ssch1);
+                get_covariance(s, ssch0);
+                get_covariance(s, ssch1);
+                get_alphas(s, ssch0);
+                get_alphas(s, ssch1);
+                get_chirps(s, ssch0);
+                get_chirps(s, ssch1);
+                create_high_signal(s, ss, ssch0);
+                create_high_signal(s, ss, ssch1);
+                estimate_spectral_envelopes(s, ss, ssch0);
+                estimate_spectral_envelopes(s, ss, ssch1);
+                map_signoise(s, ssch0);
+                map_signoise(s, ssch1);
+                add_sinusoids(s, ssch0);
+                add_sinusoids(s, ssch1);
+                generate_tones(s, ssch0);
+                generate_tones(s, ssch1);
+                generate_noise(s, ssch0);
+                generate_noise(s, ssch1);
+                assemble_hf_signal(s, ssch0);
+                assemble_hf_signal(s, ssch1);
+            }
+            {
+                SubstreamChannel *ssch = &ss->ssch[6];
+                aspx_processing(s, ssch);
+                get_qsignal_scale_factors(s, ssch, 0);
+                get_qnoise_scale_factors(s, ssch, 0);
+                mono_deq_signal_factors(s, ssch);
+                mono_deq_noise_factors(s, ssch);
+                preflattening(s, ssch);
+                get_covariance(s, ssch);
+                get_alphas(s, ssch);
+                get_chirps(s, ssch);
+                create_high_signal(s, ss, ssch);
+                estimate_spectral_envelopes(s, ss, ssch);
+                map_signoise(s, ssch);
+                add_sinusoids(s, ssch);
+                generate_tones(s, ssch);
+                generate_noise(s, ssch);
+                assemble_hf_signal(s, ssch);
+            }
+        } else {
+             {
+                SubstreamChannel *ssch = &ss->ssch[4];
+                aspx_processing(s, ssch);
+                get_qsignal_scale_factors(s, ssch, 0);
+                get_qnoise_scale_factors(s, ssch, 0);
+                mono_deq_signal_factors(s, ssch);
+                mono_deq_noise_factors(s, ssch);
+                preflattening(s, ssch);
+                get_covariance(s, ssch);
+                get_alphas(s, ssch);
+                get_chirps(s, ssch);
+                create_high_signal(s, ss, ssch);
+                estimate_spectral_envelopes(s, ss, ssch);
+                map_signoise(s, ssch);
+                add_sinusoids(s, ssch);
+                generate_tones(s, ssch);
+                generate_noise(s, ssch);
+                assemble_hf_signal(s, ssch);
+             }
+        }
+    }
+
+    return 0;
+}
+
 static void decode_channel(AC4DecodeContext *s, int ch, float *pcm)
 {
     Substream *ss = &s->substream;
@@ -6213,6 +6589,8 @@ static int ac4_decode_frame(AVCodecContext *avctx, AVFrame *frame,
     if (get_bits_left(gb) < 0)
         av_log(s->avctx, AV_LOG_WARNING, "overread %d bits\n", -get_bits_left(gb));
 
+    av_log(s->avctx, AV_LOG_WARNING, "decoding channel_mode: %d\n", ssinfo->channel_mode);
+
     for (int ch = 0; ch < avctx->ch_layout.nb_channels; ch++)
         scale_spec(s, ch);
 
@@ -6226,6 +6604,9 @@ static int ac4_decode_frame(AVCodecContext *avctx, AVFrame *frame,
     case 3:
     case 4:
         m5channel_processing(s, &s->substream);
+        break;
+    case 12: /* SURROUND_7_1_4 */
+        immersive_processing(s, &s->substream);
         break;
     }
 
@@ -6241,6 +6622,9 @@ static int ac4_decode_frame(AVCodecContext *avctx, AVFrame *frame,
         break;
     case 3:
     case 4:
+        break;
+    case 12:
+        immersive_aspx_processing(s, &s->substream);
         break;
     }
 
