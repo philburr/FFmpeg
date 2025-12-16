@@ -450,6 +450,7 @@ typedef struct AC4DecodeContext {
     int             total_groups;
     int             substream_size[AC4_MAX_SUBSTREAMS];
     int             substream_type[AC4_MAX_SUBSTREAMS];
+    uint8_t         channel_map[256];
 
     DECLARE_ALIGNED(32, float, winl)[2048];
     DECLARE_ALIGNED(32, float, winr)[2048];
@@ -625,7 +626,7 @@ static int three_channel_data(AC4DecodeContext *s, Substream *ss,
                               SubstreamChannel *ssch0,
                               SubstreamChannel *ssch1,
                               SubstreamChannel *ssch2);
-static int two_channel_data(AC4DecodeContext *s, Substream *ss, int channel_index);
+static int two_channel_data(AC4DecodeContext *s, Substream *ss, int left_channel, int right_channel);
 
 static VLC channel_mode_vlc;
 static VLC channel_mode_vlc_v1;
@@ -3999,10 +4000,10 @@ static int channel_element_7x(AC4DecodeContext *s, int channel_mode, int iframe)
     switch (ss->coding_config) {
     case 0:
         ss->mode_2ch = get_bits1(gb);
-        ret = two_channel_data(s, ss, 0);
+        ret = two_channel_data(s, ss, 0, 1);
         if (ret < 0)
             return ret;
-        ret = two_channel_data(s, ss, 2);
+        ret = two_channel_data(s, ss, 2, 3);
         if (ret < 0)
             return ret;
         break;
@@ -4010,7 +4011,7 @@ static int channel_element_7x(AC4DecodeContext *s, int channel_mode, int iframe)
         ret = three_channel_data(s, ss, &ss->ssch[0], &ss->ssch[1], &ss->ssch[2]);
         if (ret < 0)
             return ret;
-        ret = two_channel_data(s, ss, 3);
+        ret = two_channel_data(s, ss, 3, 4);
         if (ret < 0)
             return ret;
         break;
@@ -4041,7 +4042,7 @@ static int channel_element_7x(AC4DecodeContext *s, int channel_mode, int iframe)
             chparam_info(s, ss, &ss->ssch[5]);
             chparam_info(s, ss, &ss->ssch[6]);
         }
-        ret = two_channel_data(s, ss, 5);
+        ret = two_channel_data(s, ss, 5, 6);
         if (ret < 0)
             return ret;
 
@@ -4125,11 +4126,11 @@ static int three_channel_data(AC4DecodeContext *s, Substream *ss,
 }
 
 static int two_channel_data(AC4DecodeContext *s, Substream *ss,
-                            int channel_index)
+                            int left_channel, int right_channel)
 {
     GetBitContext *gb = &s->gbc;
-    SubstreamChannel *ch0 = &ss->ssch[channel_index];
-    SubstreamChannel *ch1 = &ss->ssch[channel_index + 1];
+    SubstreamChannel *ch0 = &ss->ssch[left_channel];
+    SubstreamChannel *ch1 = &ss->ssch[right_channel];
     int ret;
 
     if (get_bits_left(gb) <= 0) {
@@ -4254,10 +4255,10 @@ static int channel_element_5x(AC4DecodeContext *s, int lfe, int iframe)
         switch (ss->coding_config) {
         case 0:
             ss->mode_2ch = get_bits1(gb);
-            ret = two_channel_data(s, ss, 0);
+            ret = two_channel_data(s, ss, 0, 1);
             if (ret < 0)
                 return ret;
-            ret = two_channel_data(s, ss, 2);
+            ret = two_channel_data(s, ss, 2, 3);
             if (ret < 0)
                 return ret;
             ret = mono_data(s, ss, &ss->ssch[4], 0, iframe);
@@ -4268,7 +4269,7 @@ static int channel_element_5x(AC4DecodeContext *s, int lfe, int iframe)
             ret = three_channel_data(s, ss, &ss->ssch[0], &ss->ssch[1], &ss->ssch[2]);
             if (ret < 0)
                 return ret;
-            ret = two_channel_data(s, ss, 3);
+            ret = two_channel_data(s, ss, 3, 4);
             if (ret < 0)
                 return ret;
             break;
@@ -4306,7 +4307,7 @@ static int channel_element_5x(AC4DecodeContext *s, int lfe, int iframe)
         if (ss->coding_config)
             ret = three_channel_data(s, ss, &ss->ssch[0], &ss->ssch[1], &ss->ssch[2]);
         else
-            ret = two_channel_data(s, ss, 0);
+            ret = two_channel_data(s, ss, 0, 1);
         if (ret < 0)
             return ret;
 
@@ -4456,13 +4457,13 @@ static int immersive_channel_element(AC4DecodeContext *s, int b_lfe, int b_5fron
     switch (core_5ch_grouping) {
     case 0:
         ss->mode_2ch = get_bits1(&s->gbc);
-        two_channel_data(s, ss, 0);
-        two_channel_data(s, ss, 3);
-        mono_data(s, ss, &ss->ssch[2], 0, b_iframe);
+        two_channel_data(s, ss, 0, 1);
+        two_channel_data(s, ss, 2, 3);
+        mono_data(s, ss, &ss->ssch[4], 0, b_iframe);
         break;
     case 1:
         three_channel_data(s, ss, &ss->ssch[0], &ss->ssch[1], &ss->ssch[2]);
-        two_channel_data(s, ss, 3);
+        two_channel_data(s, ss, 3, 4);
         break;
     case 2:
         four_channel_data(s, ss, b_iframe);
@@ -4478,11 +4479,12 @@ static int immersive_channel_element(AC4DecodeContext *s, int b_lfe, int b_5fron
 
     ch_index = 5;
     if (core_channel_config == CORE_7CH_STATIC) {
-        if (get_bits1(&s->gbc)) {
+        int b_use_sap_add_ch = get_bits1(&s->gbc);
+        if (b_use_sap_add_ch) {
             chparam_info(s, ss, &ss->ssch[5]);
             chparam_info(s, ss, &ss->ssch[6]);
         }
-        two_channel_data(s, &s->substream, 5);
+        two_channel_data(s, &s->substream, 5, 6);
         ch_index = 7;
     }
     if (immersive_codec_mode == ASPX_SCPL) {
@@ -4522,14 +4524,14 @@ static int immersive_channel_element(AC4DecodeContext *s, int b_lfe, int b_5fron
         immersive_codec_mode == ASPX_SCPL ||
         immersive_codec_mode == ASPX_ACPL_1)
     {
-        two_channel_data(s, &s->substream, ch_index);
-        two_channel_data(s, &s->substream, ch_index + 2);
+        two_channel_data(s, &s->substream, ch_index, ch_index + 1);
+        two_channel_data(s, &s->substream, ch_index + 2, ch_index + 3);
         chparam_info(s, &s->substream, &s->substream.ssch[ch_index]);
         chparam_info(s, &s->substream, &s->substream.ssch[ch_index + 1]);
         chparam_info(s, &s->substream, &s->substream.ssch[ch_index + 2]);
         chparam_info(s, &s->substream, &s->substream.ssch[ch_index + 3]);
         if (b_5fronts) {
-            two_channel_data(s, &s->substream, ch_index + 4);
+            two_channel_data(s, &s->substream, ch_index + 4, ch_index + 5);
             chparam_info(s, &s->substream, &s->substream.ssch[ch_index + 4]);
             chparam_info(s, &s->substream, &s->substream.ssch[ch_index + 5]);
         }
