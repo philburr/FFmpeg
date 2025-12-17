@@ -629,11 +629,8 @@ static const AVChannelLayout ff_ac4_ch_layouts[] = {
 
 static enum AVChannel ac4_channel_map[FF_ARRAY_ELEMS(ff_ac4_ch_layouts)][AC4_MAX_CHANNELS];
 
-static int three_channel_data(AC4DecodeContext *s, Substream *ss,
-                              SubstreamChannel *ssch0,
-                              SubstreamChannel *ssch1,
-                              SubstreamChannel *ssch2);
-static int two_channel_data(AC4DecodeContext *s, Substream *ss, int left_channel, int right_channel);
+static int three_channel_data(AC4DecodeContext *s, Substream *ss, uint8_t channels[3]);
+static int two_channel_data(AC4DecodeContext *s, Substream *ss, uint8_t channels[2]);
 
 static VLC channel_mode_vlc;
 static VLC channel_mode_vlc_v1;
@@ -3817,27 +3814,27 @@ static int channel_pair_element(AC4DecodeContext *s, int iframe)
     return 0;
 }
 
-static int four_channel_data(AC4DecodeContext *s, Substream *ss, int iframe)
+static int four_channel_data(AC4DecodeContext *s, Substream *ss, uint8_t channels[4], int iframe)
 {
     int ret;
 
-    ret = sf_info(s, ss, &ss->ssch[0], SF_ASF, 0, 0);
+    ret = sf_info(s, ss, &ss->ssch[channels[0]], SF_ASF, 0, 0);
     if (ret < 0)
         return ret;
 
     for (int i = 1; i < 4; i++) {
-        memcpy(&ss->ssch[i], &ss->ssch[0], sizeof(ss->ssch[0]));
+        memcpy(&ss->ssch[channels[i]], &ss->ssch[channels[0]], sizeof(ss->ssch[channels[0]]));
     }
 
     for (int i = 0; i < 4; i++) {
-        ret = chparam_info(s, ss, &ss->ssch[i]);
+        ret = chparam_info(s, ss, &ss->ssch[channels[i]]);
         if (ret < 0)
             return ret;
     }
 
     for (int i = 0; i < 4; i++) {
         av_log(s->avctx, AV_LOG_DEBUG, "channel: %d/4\n", i);
-        ret = sf_data(s, ss, &ss->ssch[i], iframe, SF_ASF);
+        ret = sf_data(s, ss, &ss->ssch[channels[i]], iframe, SF_ASF);
         if (ret < 0)
             return ret;
     }
@@ -3845,7 +3842,7 @@ static int four_channel_data(AC4DecodeContext *s, Substream *ss, int iframe)
     return 0;
 }
 
-static int five_channel_info(AC4DecodeContext *s, Substream *ss)
+static int five_channel_info(AC4DecodeContext *s, Substream *ss, uint8_t channels[5])
 {
     GetBitContext *gb = &s->gbc;
     int ret;
@@ -3853,7 +3850,7 @@ static int five_channel_info(AC4DecodeContext *s, Substream *ss)
     ss->chel_matsel = get_bits(gb, 4);
 
     for (int i = 0; i < 5; i++) {
-        ret = chparam_info(s, ss, &ss->ssch[i]);
+        ret = chparam_info(s, ss, &ss->ssch[channels[i]]);
         if (ret < 0)
             return ret;
     }
@@ -3861,29 +3858,29 @@ static int five_channel_info(AC4DecodeContext *s, Substream *ss)
     return 0;
 }
 
-static int five_channel_data(AC4DecodeContext *s, Substream *ss, int iframe)
+static int five_channel_data(AC4DecodeContext *s, Substream *ss, uint8_t channels[5], int iframe)
 {
     int ret;
 
-    ret = sf_info(s, ss, &ss->ssch[0], SF_ASF, 0, 0);
+    ret = sf_info(s, ss, &ss->ssch[channels[0]], SF_ASF, 0, 0);
     if (ret < 0)
         return ret;
 
     for (int i = 1; i < 5; i++) {
-        memcpy(&ss->ssch[i].scp, &ss->ssch[0].scp, sizeof(ss->ssch[0].scp));
-        memcpy(&ss->ssch[i].sect_sfb_offset, &ss->ssch[0].sect_sfb_offset, sizeof(ss->ssch[0].sect_sfb_offset));
-        memcpy(&ss->ssch[i].offset2sfb, &ss->ssch[0].offset2sfb, sizeof(ss->ssch[0].offset2sfb));
-        memcpy(&ss->ssch[i].offset2g, &ss->ssch[0].offset2g, sizeof(ss->ssch[0].offset2g));
-        memcpy(&ss->ssch[i].win_offset, &ss->ssch[0].win_offset, sizeof(ss->ssch[0].win_offset));
+        memcpy(&ss->ssch[channels[i]].scp, &ss->ssch[channels[0]].scp, sizeof(ss->ssch[channels[0]].scp));
+        memcpy(&ss->ssch[channels[i]].sect_sfb_offset, &ss->ssch[channels[0]].sect_sfb_offset, sizeof(ss->ssch[channels[0]].sect_sfb_offset));
+        memcpy(&ss->ssch[channels[i]].offset2sfb, &ss->ssch[channels[0]].offset2sfb, sizeof(ss->ssch[channels[0]].offset2sfb));
+        memcpy(&ss->ssch[channels[i]].offset2g, &ss->ssch[channels[0]].offset2g, sizeof(ss->ssch[channels[0]].offset2g));
+        memcpy(&ss->ssch[channels[i]].win_offset, &ss->ssch[channels[0]].win_offset, sizeof(ss->ssch[channels[0]].win_offset));
     }
 
-    ret = five_channel_info(s, ss);
+    ret = five_channel_info(s, ss, channels);
     if (ret < 0)
         return ret;
 
     for (int i = 0; i < 5; i++) {
         av_log(s->avctx, AV_LOG_DEBUG, "channel: %d/5\n", i);
-        ret = sf_data(s, ss, &ss->ssch[i], iframe, SF_ASF);
+        ret = sf_data(s, ss, &ss->ssch[channels[i]], iframe, SF_ASF);
         if (ret < 0)
             return ret;
     }
@@ -4019,28 +4016,28 @@ static int channel_element_7x(AC4DecodeContext *s, int channel_mode, int iframe)
     switch (ss->coding_config) {
     case 0:
         ss->mode_2ch = get_bits1(gb);
-        ret = two_channel_data(s, ss, 0, 1);
+        ret = two_channel_data(s, ss, (uint8_t []){0, 1});
         if (ret < 0)
             return ret;
-        ret = two_channel_data(s, ss, 2, 3);
+        ret = two_channel_data(s, ss, (uint8_t []){2, 3});
         if (ret < 0)
             return ret;
         break;
     case 1:
-        ret = three_channel_data(s, ss, &ss->ssch[0], &ss->ssch[1], &ss->ssch[2]);
+        ret = three_channel_data(s, ss, (uint8_t []){0, 1, 2});
         if (ret < 0)
             return ret;
-        ret = two_channel_data(s, ss, 3, 4);
+        ret = two_channel_data(s, ss, (uint8_t []){3, 4});
         if (ret < 0)
             return ret;
         break;
     case 2:
-        ret = four_channel_data(s, ss, iframe);
+        ret = four_channel_data(s, ss, (uint8_t []){0, 1, 2, 3}, iframe);
         if (ret < 0)
             return ret;
         break;
     case 3:
-        ret = five_channel_data(s, ss, iframe);
+        ret = five_channel_data(s, ss, (uint8_t []){0, 1, 2, 3, 4}, iframe);
         if (ret < 0)
             return ret;
         break;
@@ -4055,7 +4052,7 @@ static int channel_element_7x(AC4DecodeContext *s, int channel_mode, int iframe)
             chparam_info(s, ss, &ss->ssch[5]);
             chparam_info(s, ss, &ss->ssch[6]);
         }
-        ret = two_channel_data(s, ss, 5, 6);
+        ret = two_channel_data(s, ss, (uint8_t []){5, 6});
         if (ret < 0)
             return ret;
     }
@@ -4103,13 +4100,12 @@ static int channel_element_7x(AC4DecodeContext *s, int channel_mode, int iframe)
     return 0;
 }
 
-static int three_channel_info(AC4DecodeContext *s, Substream *ss,
-                              SubstreamChannel *ssch0,
-                              SubstreamChannel *ssch1,
-                              SubstreamChannel *ssch2)
+static int three_channel_info(AC4DecodeContext *s, Substream *ss, uint8_t channels[3])
 {
     GetBitContext *gb = &s->gbc;
     int ret;
+    SubstreamChannel *ssch0 = &ss->ssch[channels[0]];
+    SubstreamChannel *ssch1 = &ss->ssch[channels[1]];
 
     ss->chel_matsel = get_bits(gb, 4);
     ret = chparam_info(s, ss, ssch0);
@@ -4118,12 +4114,12 @@ static int three_channel_info(AC4DecodeContext *s, Substream *ss,
     return chparam_info(s, ss, ssch1);
 }
 
-static int three_channel_data(AC4DecodeContext *s, Substream *ss,
-                              SubstreamChannel *ssch0,
-                              SubstreamChannel *ssch1,
-                              SubstreamChannel *ssch2)
+static int three_channel_data(AC4DecodeContext *s, Substream *ss, uint8_t channels[3])
 {
     int ret;
+    SubstreamChannel *ssch0 = &ss->ssch[channels[0]];
+    SubstreamChannel *ssch1 = &ss->ssch[channels[1]];
+    SubstreamChannel *ssch2 = &ss->ssch[channels[2]];
 
     ret = sf_info(s, ss, ssch0, SF_ASF, 0, 0);
     if (ret < 0)
@@ -4141,7 +4137,7 @@ static int three_channel_data(AC4DecodeContext *s, Substream *ss,
     memcpy(&ssch2->offset2g, &ssch0->offset2g, sizeof(ss->ssch[0].offset2g));
     memcpy(&ssch2->win_offset, &ssch0->win_offset, sizeof(ss->ssch[0].win_offset));
 
-    ret = three_channel_info(s, ss, ssch0, ssch1, ssch2);
+    ret = three_channel_info(s, ss, channels);
     if (ret < 0)
         return ret;
     av_log(s->avctx, AV_LOG_DEBUG, "channel: %d/3\n", 0);
@@ -4160,12 +4156,11 @@ static int three_channel_data(AC4DecodeContext *s, Substream *ss,
     return 0;
 }
 
-static int two_channel_data(AC4DecodeContext *s, Substream *ss,
-                            int left_channel, int right_channel)
+static int two_channel_data(AC4DecodeContext *s, Substream *ss, uint8_t channels[2])
 {
     GetBitContext *gb = &s->gbc;
-    SubstreamChannel *ch0 = &ss->ssch[left_channel];
-    SubstreamChannel *ch1 = &ss->ssch[right_channel];
+    SubstreamChannel *ch0 = &ss->ssch[channels[0]];
+    SubstreamChannel *ch1 = &ss->ssch[channels[1]];
     int ret;
 
     if (get_bits_left(gb) <= 0) {
@@ -4233,10 +4228,7 @@ static int channel_element_3x(AC4DecodeContext *s, int iframe)
             return ret;
         break;
     case 1:
-        ret = three_channel_data(s, ss,
-                                 &ss->ssch[0],
-                                 &ss->ssch[1],
-                                 &ss->ssch[2]);
+        ret = three_channel_data(s, ss, (uint8_t []){0, 1, 2});
         if (ret < 0)
             return ret;
         break;
@@ -4290,10 +4282,10 @@ static int channel_element_5x(AC4DecodeContext *s, int lfe, int iframe)
         switch (ss->coding_config) {
         case 0:
             ss->mode_2ch = get_bits1(gb);
-            ret = two_channel_data(s, ss, 0, 1);
+            ret = two_channel_data(s, ss, (uint8_t []){0, 1});
             if (ret < 0)
                 return ret;
-            ret = two_channel_data(s, ss, 2, 3);
+            ret = two_channel_data(s, ss, (uint8_t []){2, 3});
             if (ret < 0)
                 return ret;
             ret = mono_data(s, ss, &ss->ssch[4], 0, iframe);
@@ -4301,15 +4293,15 @@ static int channel_element_5x(AC4DecodeContext *s, int lfe, int iframe)
                 return ret;
             break;
         case 1:
-            ret = three_channel_data(s, ss, &ss->ssch[0], &ss->ssch[1], &ss->ssch[2]);
+            ret = three_channel_data(s, ss, (uint8_t []){0, 1, 2});
             if (ret < 0)
                 return ret;
-            ret = two_channel_data(s, ss, 3, 4);
+            ret = two_channel_data(s, ss, (uint8_t []){3, 4});
             if (ret < 0)
                 return ret;
             break;
         case 2:
-            ret = four_channel_data(s, ss, iframe);
+            ret = four_channel_data(s, ss, (uint8_t []){0, 1, 2, 3}, iframe);
             if (ret < 0)
                 return ret;
             ret = mono_data(s, ss, &ss->ssch[4], 0, iframe);
@@ -4317,7 +4309,7 @@ static int channel_element_5x(AC4DecodeContext *s, int lfe, int iframe)
                 return ret;
             break;
         case 3:
-            ret = five_channel_data(s, ss, iframe);
+            ret = five_channel_data(s, ss, (uint8_t []){0, 1, 2, 3, 4}, iframe);
             if (ret < 0)
                 return ret;
             break;
@@ -4340,9 +4332,9 @@ static int channel_element_5x(AC4DecodeContext *s, int lfe, int iframe)
         companding_control(s, ss, 3);
         ss->coding_config = get_bits1(gb);
         if (ss->coding_config)
-            ret = three_channel_data(s, ss, &ss->ssch[0], &ss->ssch[1], &ss->ssch[2]);
+            ret = three_channel_data(s, ss, (uint8_t []){0, 1, 2});
         else
-            ret = two_channel_data(s, ss, 0, 1);
+            ret = two_channel_data(s, ss, (uint8_t []){0, 1});
         if (ret < 0)
             return ret;
 
@@ -4492,20 +4484,20 @@ static int immersive_channel_element(AC4DecodeContext *s, int b_lfe, int b_5fron
     switch (core_5ch_grouping) {
     case 0:
         ss->mode_2ch = get_bits1(&s->gbc);
-        two_channel_data(s, ss, 0, 1);
-        two_channel_data(s, ss, 2, 3);
+        two_channel_data(s, ss, (uint8_t []){0, 1});
+        two_channel_data(s, ss, (uint8_t []){2, 3});
         mono_data(s, ss, &ss->ssch[4], 0, b_iframe);
         break;
     case 1:
-        three_channel_data(s, ss, &ss->ssch[0], &ss->ssch[1], &ss->ssch[2]);
-        two_channel_data(s, ss, 3, 4);
+        three_channel_data(s, ss, (uint8_t []){0, 1, 2});
+        two_channel_data(s, ss, (uint8_t []){3, 4});
         break;
     case 2:
-        four_channel_data(s, ss, b_iframe);
+        four_channel_data(s, ss, (uint8_t []){0, 1, 2, 3}, b_iframe);
         mono_data(s, ss, &ss->ssch[4], 0, b_iframe);
         break;
     case 3:
-        five_channel_data(s, ss, b_iframe);
+        five_channel_data(s, ss, (uint8_t []){0, 1, 2, 3, 4}, b_iframe);
         break;
     default:
         av_log(s->avctx, AV_LOG_ERROR, "invalid core_5ch_grouping: %d\n", core_5ch_grouping);
@@ -4519,7 +4511,7 @@ static int immersive_channel_element(AC4DecodeContext *s, int b_lfe, int b_5fron
             chparam_info(s, ss, &ss->ssch[5]);
             chparam_info(s, ss, &ss->ssch[6]);
         }
-        two_channel_data(s, &s->substream, 5, 6);
+        two_channel_data(s, &s->substream, (uint8_t []){5, 6});
         ch_index = 7;
     }
     if (immersive_codec_mode == ASPX_SCPL) {
@@ -4559,14 +4551,14 @@ static int immersive_channel_element(AC4DecodeContext *s, int b_lfe, int b_5fron
         immersive_codec_mode == ASPX_SCPL ||
         immersive_codec_mode == ASPX_ACPL_1)
     {
-        two_channel_data(s, &s->substream, ch_index, ch_index + 1);
-        two_channel_data(s, &s->substream, ch_index + 2, ch_index + 3);
+        two_channel_data(s, &s->substream, (uint8_t []){ch_index, ch_index + 1});
+        two_channel_data(s, &s->substream, (uint8_t []){ch_index + 2, ch_index + 3});
         chparam_info(s, &s->substream, &s->substream.ssch[ch_index]);
         chparam_info(s, &s->substream, &s->substream.ssch[ch_index + 1]);
         chparam_info(s, &s->substream, &s->substream.ssch[ch_index + 2]);
         chparam_info(s, &s->substream, &s->substream.ssch[ch_index + 3]);
         if (b_5fronts) {
-            two_channel_data(s, &s->substream, ch_index + 4, ch_index + 5);
+            two_channel_data(s, &s->substream, (uint8_t []){ch_index + 4, ch_index + 5});
             chparam_info(s, &s->substream, &s->substream.ssch[ch_index + 4]);
             chparam_info(s, &s->substream, &s->substream.ssch[ch_index + 5]);
         }
