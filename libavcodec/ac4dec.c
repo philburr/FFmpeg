@@ -70,6 +70,7 @@
 #define AC4_MAX_PRESENTATIONS 8
 #define AC4_MAX_SUBSTREAM_GROUPS 8
 #define AC4_MAX_SUBSTREAM_CHANNELS 32
+#define AC4_MAX_CHANNELS 24
 
 typedef struct ACState {
     uint32_t ui_low;
@@ -450,8 +451,9 @@ typedef struct AC4DecodeContext {
     int             total_groups;
     int             substream_size[AC4_MAX_SUBSTREAMS];
     int             substream_type[AC4_MAX_SUBSTREAMS];
-    uint8_t         channel_map[256];
-
+    int             channel_map_valid;
+    uint8_t         channel_map[256];                       // Map AVChannel to AC4Channel
+    enum AVChannel (*channel_layout)[AC4_MAX_CHANNELS];     // Map output index to AVChannel
     DECLARE_ALIGNED(32, float, winl)[2048];
     DECLARE_ALIGNED(32, float, winr)[2048];
 
@@ -593,6 +595,17 @@ static const uint8_t channel_mode_nb_channels[32] = {
     1, 2, 3, 5, 6, 7, 8, 7, 8, 7, 8, 11, 12, 13, 14, 24, 0
 };
 
+#define AV_CH_LAYOUT_7POINT0POINT4     (AV_CH_LAYOUT_7POINT0|AV_CH_TOP_FRONT_LEFT|AV_CH_TOP_FRONT_RIGHT|AV_CH_TOP_BACK_LEFT|AV_CH_TOP_BACK_RIGHT)
+#define AV_CH_LAYOUT_7POINT1POINT4     (AV_CH_LAYOUT_7POINT1|AV_CH_TOP_FRONT_LEFT|AV_CH_TOP_FRONT_RIGHT|AV_CH_TOP_BACK_LEFT|AV_CH_TOP_BACK_RIGHT)
+#define AV_CH_LAYOUT_9POINT0           (AV_CH_LAYOUT_7POINT0|AV_CH_FRONT_LEFT_OF_CENTER|AV_CH_FRONT_RIGHT_OF_CENTER)
+#define AV_CH_LAYOUT_9POINT1           (AV_CH_LAYOUT_7POINT1|AV_CH_FRONT_LEFT_OF_CENTER|AV_CH_FRONT_RIGHT_OF_CENTER)
+#define AV_CH_LAYOUT_9POINT0POINT4     (AV_CH_LAYOUT_9POINT0|AV_CH_TOP_FRONT_LEFT|AV_CH_TOP_FRONT_RIGHT|AV_CH_TOP_BACK_LEFT|AV_CH_TOP_BACK_RIGHT)
+#define AV_CH_LAYOUT_9POINT1POINT4     (AV_CH_LAYOUT_9POINT1|AV_CH_TOP_FRONT_LEFT|AV_CH_TOP_FRONT_RIGHT|AV_CH_TOP_BACK_LEFT|AV_CH_TOP_BACK_RIGHT)
+
+#define AV_CH_LAYOUT_7POINT1_FRONT     (AV_CH_LAYOUT_5POINT1|AV_CH_FRONT_LEFT_OF_CENTER|AV_CH_FRONT_RIGHT_OF_CENTER)
+#define AV_CH_LAYOUT_7POINT0_TOP_FRONT (AV_CH_LAYOUT_5POINT0|AV_CH_TOP_FRONT_LEFT|AV_CH_TOP_FRONT_RIGHT)
+#define AV_CH_LAYOUT_7POINT1_TOP_FRONT (AV_CH_LAYOUT_5POINT1|AV_CH_TOP_FRONT_LEFT|AV_CH_TOP_FRONT_RIGHT)
+
 static const AVChannelLayout ff_ac4_ch_layouts[] = {
     AV_CHANNEL_LAYOUT_MONO,
     AV_CHANNEL_LAYOUT_STEREO,
@@ -602,25 +615,19 @@ static const AVChannelLayout ff_ac4_ch_layouts[] = {
     AV_CHANNEL_LAYOUT_7POINT0,
     AV_CHANNEL_LAYOUT_7POINT1,
     AV_CHANNEL_LAYOUT_7POINT0_FRONT,
-    {
-        .nb_channels = 7,
-        .order       = AV_CHANNEL_ORDER_NATIVE,
-        .u.mask      = AV_CH_LAYOUT_7POINT0 | AV_CH_LOW_FREQUENCY,
-    },
-    { 0 },
-    { 0 },
-    { 0 },
-    {
-        .nb_channels = 12,
-        .order       = AV_CHANNEL_ORDER_NATIVE,
-        .u.mask      = AV_CH_LAYOUT_7POINT1 | AV_CH_TOP_FRONT_LEFT | AV_CH_TOP_FRONT_RIGHT | AV_CH_TOP_BACK_LEFT | AV_CH_TOP_BACK_RIGHT,
-    },
-    { 0 },
-    { 0 },
+    AV_CHANNEL_LAYOUT_MASK(8, AV_CH_LAYOUT_7POINT1_FRONT),
+    AV_CHANNEL_LAYOUT_MASK(7, AV_CH_LAYOUT_7POINT0_TOP_FRONT),
+    AV_CHANNEL_LAYOUT_MASK(8, AV_CH_LAYOUT_7POINT1_TOP_FRONT),
+    AV_CHANNEL_LAYOUT_MASK(11, AV_CH_LAYOUT_7POINT0POINT4),
+    AV_CHANNEL_LAYOUT_MASK(12, AV_CH_LAYOUT_7POINT1POINT4),
+    AV_CHANNEL_LAYOUT_MASK(13, AV_CH_LAYOUT_9POINT0POINT4),
+    AV_CHANNEL_LAYOUT_MASK(14, AV_CH_LAYOUT_9POINT1POINT4),
     { 0 },
     { 0 },
     { 0 },
 };
+
+static enum AVChannel ac4_channel_map[FF_ARRAY_ELEMS(ff_ac4_ch_layouts)][AC4_MAX_CHANNELS];
 
 static int three_channel_data(AC4DecodeContext *s, Substream *ss,
                               SubstreamChannel *ssch0,
@@ -810,6 +817,13 @@ static av_cold int ac4_decode_init(AVCodecContext *avctx)
             s->sin_atab[i][n] = sinf(M_PI/128*(i+0.5)*(2*n-1));
             s->cos_stab[n][i] = cosf(M_PI/128*(i+0.5)*(2*n-255)) / 64.f;
             s->sin_stab[n][i] = sinf(M_PI/128*(i+0.5)*(2*n-255)) / 64.f;
+        }
+    }
+
+    for (int i = 0; i < FF_ARRAY_ELEMS(ff_ac4_ch_layouts); i++) {
+        av_assert2(ff_ac4_ch_layouts[i].nb_channels <= AC4_MAX_CHANNELS);
+        for (int j = 0; j < ff_ac4_ch_layouts[i].nb_channels; j++) {
+            ac4_channel_map[i][j] = av_channel_layout_channel_from_index(&ff_ac4_ch_layouts[i], j);
         }
     }
 
@@ -3709,6 +3723,11 @@ static int channel_pair_element(AC4DecodeContext *s, int iframe)
     int spec_frontend;
     int ret;
 
+    /* this is an example of channel mapping*/
+    s->channel_map_valid = 1;
+    s->channel_map[AV_CHAN_FRONT_LEFT] = 0;
+    s->channel_map[AV_CHAN_FRONT_RIGHT] = 1;
+
     ss->codec_mode = get_bits(gb, 2);
     av_log(s->avctx, AV_LOG_DEBUG, "codec_mode: %d\n", ss->codec_mode);
     if (iframe) {
@@ -4598,8 +4617,17 @@ static int audio_data(AC4DecodeContext *s, int channel_mode, int iframe)
     case SURROUND_7_1__3_2_2:
         ret = channel_element_7x(s, channel_mode, iframe);
         break;
+    case SURROUND_7_0_4:
+        ret = immersive_channel_element(s, 0, 0, iframe);
+        break;
     case SURROUND_7_1_4:
         ret = immersive_channel_element(s, 1, 0, iframe);
+        break;
+    case SURROUND_9_0_4:
+        ret = immersive_channel_element(s, 0, 1, iframe);
+        break;
+    case SURROUND_9_1_4:
+        ret = immersive_channel_element(s, 1, 1, iframe);
         break;
     default:
         av_log(s->avctx, AV_LOG_ERROR, "invalid channel mode: %d\n", channel_mode);
@@ -6595,6 +6623,9 @@ static int ac4_decode_frame(AVCodecContext *avctx, AVFrame *frame,
     if (avctx->ch_layout.nb_channels == 0)
          av_log(s->avctx, AV_LOG_ERROR, "Detected 0 channels. channel_mode: %d\n", ssinfo->channel_mode);
     avctx->ch_layout = ff_ac4_ch_layouts[ssinfo->channel_mode];
+    s->channel_layout = &ac4_channel_map[ssinfo->channel_mode];
+    s->channel_map_valid = 0;
+
     //frame->nb_samples = av_rescale(s->frame_len_base,
     //                               s->resampling_ratio.num,
     //                               s->resampling_ratio.den);
@@ -6672,8 +6703,12 @@ static int ac4_decode_frame(AVCodecContext *avctx, AVFrame *frame,
         break;
     }
 
-    for (int ch = 0; ch < avctx->ch_layout.nb_channels; ch++)
-        decode_channel(s, ch, (float *)frame->extended_data[ch]);
+    for (int ch = 0; ch < avctx->ch_layout.nb_channels; ch++) {
+        enum AVChannel ac4_ch = (*s->channel_layout)[ch];
+        int ac4_ch_idx = s->channel_map_valid ? s->channel_map[ac4_ch] : ch;
+
+        decode_channel(s, ac4_ch_idx, (float *)frame->extended_data[ch]);
+    }
 
     if (s->iframe_global)
         frame->flags |= AV_FRAME_FLAG_KEY;
