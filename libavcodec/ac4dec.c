@@ -4029,12 +4029,6 @@ static int channel_element_7x(AC4DecodeContext *s, int channel_mode, int iframe)
         av_assert0(0);
     }
 
-    if (ss->coding_config == 0 || ss->coding_config == 2) {
-        ret = mono_data(s, ss, &ss->ssch[4], 0, iframe);
-        if (ret < 0)
-            return ret;
-    }
-
     if (ss->codec_mode == CM_SIMPLE || ss->codec_mode == CM_ASPX)
     {
         int b_use_sap_add_ch = get_bits1(gb);
@@ -4045,24 +4039,46 @@ static int channel_element_7x(AC4DecodeContext *s, int channel_mode, int iframe)
         ret = two_channel_data(s, ss, 5, 6);
         if (ret < 0)
             return ret;
+    }
 
-        if (ss->codec_mode != CM_SIMPLE) {
-            ret = aspx_data_2ch(s, ss, &ss->ssch[0], &ss->ssch[1], iframe);
-            if (ret < 0)
-                return ret;
-            ret = aspx_data_2ch(s, ss, &ss->ssch[2], &ss->ssch[3], iframe);
-            if (ret < 0)
-                return ret;
-            ret = aspx_data_1ch(s, ss, &ss->ssch[4], iframe);
-            if (ret < 0)
-                return ret;
-        }
+    if (ss->codec_mode == CM_ASPX_ACPL_1)
+    {
+        av_log(s->avctx, AV_LOG_ERROR, "not implemented\n");
+        return AVERROR_PATCHWELCOME;
+    }
 
-        if (ss->codec_mode == CM_ASPX) {
-            ret = aspx_data_2ch(s, ss, &ss->ssch[5], &ss->ssch[6], iframe);
-            if (ret < 0)
-                return ret;
-        }
+    if (ss->coding_config == 0 || ss->coding_config == 2) {
+        ret = mono_data(s, ss, &ss->ssch[4], 0, iframe);
+        if (ret < 0)
+            return ret;
+    }
+
+    if (ss->codec_mode != CM_SIMPLE) {
+        ret = aspx_data_2ch(s, ss, &ss->ssch[0], &ss->ssch[1], iframe);
+        if (ret < 0)
+            return ret;
+        ret = aspx_data_2ch(s, ss, &ss->ssch[2], &ss->ssch[3], iframe);
+        if (ret < 0)
+            return ret;
+        ret = aspx_data_1ch(s, ss, &ss->ssch[4], iframe);
+        if (ret < 0)
+            return ret;
+    }
+
+    if (ss->codec_mode == CM_ASPX) {
+        ret = aspx_data_2ch(s, ss, &ss->ssch[5], &ss->ssch[6], iframe);
+        if (ret < 0)
+            return ret;
+    }
+
+    if (ss->codec_mode == CM_ASPX_ACPL_1 || ss->codec_mode == CM_ASPX_ACPL_2)
+    {
+        ret = acpl_data_1ch(s, ss, &ss->ssch[0]);
+        if (ret < 0)
+            return ret;
+        ret = acpl_data_1ch(s, ss, &ss->ssch[1]);
+        if (ret < 0)
+            return ret;
     }
 
     return 0;
